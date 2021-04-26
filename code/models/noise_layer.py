@@ -7,7 +7,7 @@ import numpy as np
 
 class noise_Linear(nn.Linear):
 
-    def __init__(self, in_features, out_features, bias=True, pni='layerwise', w_noise=True):
+    def __init__(self, in_features, out_features, bias=True, pni='channelwise', w_noise=True):
         super(noise_Linear, self).__init__(in_features, out_features, bias)
         
         self.pni = pni

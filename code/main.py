@@ -3,9 +3,10 @@ from __future__ import absolute_import
 
 import os
 import sys
-import shutil
+import shutil, pdb
 import time
 import random
+from PIL import Image
 import argparse
 import torch
 import torch.backends.cudnn as cudnn
@@ -31,7 +32,7 @@ parser = argparse.ArgumentParser(description='Training network for image classif
 
 parser.add_argument('--data_path', default='/home/elliot/data/pytorch/svhn/',
                     type=str, help='Path to dataset')
-parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'imagenet', 'svhn', 'stl10', 'mnist'],
+parser.add_argument('--dataset', type=str, choices=['cifar10', 'cifar100', 'imagenet', 'svhn', 'stl10', 'mnist', 'celebdf'],
                     help='Choose between Cifar10/100 and ImageNet.')
 parser.add_argument('--arch', metavar='ARCH', default='lbcnn', choices=model_names,
                     help='model architecture: ' + ' | '.join(model_names) + ' (default: resnext29_8_64)')
@@ -75,7 +76,7 @@ parser.add_argument('--workers', type=int, default=4,
 parser.add_argument('--manualSeed', type=int, default=None, help='manual seed')
 
 # adversarial training
-parser.add_argument('--epoch_delay', type=int, default=5, help='Number of epochs delayed \
+parser.add_argument('--epoch_delay', type=int, default=6, help='Number of epochs delayed \
                     for starting the adversarial traing')
 parser.add_argument('--adv_train', dest='adv_train', action='store_true',
                     help='enable the adversarial training')
@@ -88,6 +89,51 @@ parser.add_argument('--input_noise', dest='input_noise', action='store_true',
 ##########################################################################
 
 args = parser.parse_args()
+
+from torch.utils.data import Dataset
+
+class MyDataset(Dataset):
+
+    def __init__(self, root_dir, transform=None):
+        negPath = os.path.join(root_dir, 'neg')
+        posPath = os.path.join(root_dir, 'pos')
+
+        self.file = []
+        self.imgs = []
+
+        for image in os.listdir(negPath):
+            self.file.append( 'neg/'+ image)
+            self.imgs.append([os.path.join(root_dir, 'neg', image), 0])
+        for image in os.listdir(posPath):
+            self.file.append( 'pos/'+ image)
+            self.imgs.append([os.path.join(root_dir, 'pos', image), 1])
+
+        # self.file = ['neg/' + i for i in os.listdir(os.path.join(root_dir, 'neg'))]
+        # self.file.extend(['pos/' + i for i in os.listdir(os.path.join(root_dir, 'pos'))])
+        # self.file = [ self.file]
+        self.root_dir = root_dir
+        self.transform = transform
+        # self.imgs =[]
+
+        self.classes=['neg', 'pos']
+
+    def __len__(self):
+        return len(self.file)
+
+    def __getitem__(self, index):
+
+        img_name = os.path.join(self.root_dir, self.file[index])
+        if img_name.split('/')[-2] == 'neg':
+            label = 0
+        else:
+            label = 1
+
+        image = Image.open(img_name)
+        image = self.transform(image)
+
+        # self.imgs.appeng([img_name, label])
+        return image, label
+
 
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 if args.ngpu == 1:
@@ -150,22 +196,24 @@ def main():
     elif args.dataset == 'imagenet':
         mean = [0.485, 0.456, 0.406]
         std = [0.229, 0.224, 0.225]
+    elif args.dataset == 'celebdf':
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
     else:
         assert False, "Unknow dataset : {}".format(args.dataset)
 
     # Current data-preprocessing does not include the normalization
     imagenet_train_transform = [
-        transforms.RandomResizedCrop(224),
-        transforms.RandomHorizontalFlip(),
+        transforms.Resize((224, 224)),
+        transforms.RandomHorizontalFlip(p=0.5),
         transforms.ToTensor()]
     imagenet_test_transform = [
-        transforms.Resize(256),
-        transforms.CenterCrop(224),
+        transforms.Resize((224,224)),
         transforms.ToTensor()]
 
     normal_train_transform = [
         transforms.RandomHorizontalFlip(),
-        transforms.RandomCrop(32, padding=4),
+        transforms.Resize((224,224)),
         transforms.ToTensor()]
     normal_test_transform = [
         transforms.ToTensor()]
@@ -178,7 +226,7 @@ def main():
         normal_train_transform.append(transforms.Normalize(mean, std))
         normal_test_transform.append(transforms.Normalize(mean, std))
 
-    if args.dataset == 'imagenet':
+    if args.dataset == 'imagenet' or args.dataset == 'celebdf':
         train_transform = transforms.Compose(imagenet_train_transform)
         test_transform = transforms.Compose(imagenet_test_transform)
     else:
@@ -221,14 +269,43 @@ def main():
         train_data = dset.ImageFolder(train_dir, transform=train_transform)
         test_data = dset.ImageFolder(test_dir, transform=test_transform)
         num_classes = 1000
+    elif args.dataset == 'celebdf':
+        train_dir = os.path.join(args.data_path, 'val')
+        # train_dir = os.path.join(args.data_path, 'train')
+        test_dir = os.path.join(args.data_path, 'val')
+        train_data = MyDataset(train_dir, transform=train_transform)
+        test_data = MyDataset(test_dir, transform=test_transform)
+        num_classes = 2
     else:
         assert False, 'Do not support dataset : {}'.format(args.dataset)
 
+    def make_weights_for_balanced_classes(images, nclasses):
+        count = [0] * nclasses
+        for item in images:
+            count[item[1]] += 1
+        weight_per_class = [0.] * nclasses
+        N = float(sum(count))
+        print(count)
+        for i in range(nclasses):
+            weight_per_class[i] = N / float(count[i])
+        print(weight_per_class)
+        weight = [0] * len(images)
+        for idx, val in enumerate(images):
+            weight[idx] = weight_per_class[val[1]]
+        return weight
 
-    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True,
-                                               num_workers=args.workers, pin_memory=True)
-    test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size, shuffle=False,
-                                              num_workers=args.workers, pin_memory=True)
+    # train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, shuffle=True,
+    #                                            num_workers=args.workers, pin_memory=True)
+    # test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size, shuffle=False,
+    #                                           num_workers=args.workers, pin_memory=True)
+
+    weights = make_weights_for_balanced_classes(train_data.imgs, len(train_data.classes))
+    weights = torch.DoubleTensor(weights)
+    sampler = torch.utils.data.sampler.WeightedRandomSampler(weights, len(weights))
+
+    train_loader = torch.utils.data.DataLoader(train_data, batch_size=args.batch_size, sampler=sampler,
+                                                   num_workers=args.workers, pin_memory=True)
+    test_loader = torch.utils.data.DataLoader(test_data, batch_size=args.batch_size, num_workers=args.workers, pin_memory=True)
 
     print_log("=> creating model '{}'".format(args.arch), log)
 
@@ -461,7 +538,7 @@ def train(train_loader, model, criterion, optimizer, epoch, log, attacker=None, 
 
     losses = AverageMeter()
     top1 = AverageMeter()
-    top5 = AverageMeter()
+    # top5 = AverageMeter()
 
     losses_adv = AverageMeter()
     top1_adv = AverageMeter()
@@ -472,13 +549,14 @@ def train(train_loader, model, criterion, optimizer, epoch, log, attacker=None, 
     end = time.time()
 
     for i, (input, target) in enumerate(train_loader):
+
         # measure data loading time
         data_time.update(time.time() - end)
 
         if args.use_cuda:
             # the copy will be asynchronous with respect to the host.
-            target = target.cuda(async=True)
             input = input.cuda()
+            target = target.cuda()#async = True)
 
         # compute output for clean data input
         output = model(input)
@@ -486,7 +564,9 @@ def train(train_loader, model, criterion, optimizer, epoch, log, attacker=None, 
         pred_target = output.max(1, keepdim=True)[1].squeeze(-1)
 
         # perturb data inference
+
         if adv_train and (attacker is not None):
+
             model_cp = copy.deepcopy(model)
             perturbed_data = attacker.attack_method(
                 model_cp, input, pred_target)
@@ -495,17 +575,17 @@ def train(train_loader, model, criterion, optimizer, epoch, log, attacker=None, 
 
             loss = 0.5 * loss + 0.5 * loss_adv
 
-            prec1_adv, prec5_adv = accuracy(
-                output_adv.data, target, topk=(1, 5))
+            prec1_adv = accuracy(
+                output_adv.data, target, topk=1)
             losses_adv.update(loss_adv.item(), input.size(0))
             top1_adv.update(prec1_adv.item(), input.size(0))
-            top5_adv.update(prec5_adv.item(), input.size(0))
+            # top5_adv.update(prec5_adv.item(), input.size(0))
 
         # measure accuracy and record the total loss
-        prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
+        prec1 = accuracy(output.data, target, topk=1)
         losses.update(loss.item(), input.size(0))
         top1.update(prec1.item(), input.size(0))
-        top5.update(prec5.item(), input.size(0))
+        # top5.update(prec5.item(), input.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -521,19 +601,14 @@ def train(train_loader, model, criterion, optimizer, epoch, log, attacker=None, 
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})   '
                       'Data {data_time.val:.3f} ({data_time.avg:.3f})   '
                       'Loss {loss.val:.4f} ({loss.avg:.4f})   '
-                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})   '
-                      'Prec@5 {top5.val:.3f} ({top5.avg:.3f})   '.format(
+                      'Prec@1 {top1.val:.3f} ({top1.avg:.3f})   '.format(
                           epoch, i, len(train_loader), batch_time=batch_time,
-                          data_time=data_time, loss=losses, top1=top1, top5=top5) + time_string(), log)
+                          data_time=data_time, loss=losses, top1=top1) + time_string(), log)
     print_log(
-        '  **Train** Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1, top5=top5,
-                                                                                              error1=100 - top1.avg),
-        log)
+        '  **Train** Prec@1 {top1.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1, error1=100 - top1.avg), log)
 
     print_log(
-        '  **Adversarial Train** Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1_adv, top5=top5_adv,
-                                                                                                          error1=100 - top1_adv.avg),
-        log)
+        '  **Adversarial Train** Prec@1 {top1.avg:.3f}  Error@1 {error1:.3f}'.format(top1=top1_adv, error1=100 - top1_adv.avg), log)
 
     return top1.avg, losses.avg, top1_adv.avg, losses_adv.avg
 
@@ -541,22 +616,22 @@ def train(train_loader, model, criterion, optimizer, epoch, log, attacker=None, 
 def validate(val_loader, model, criterion, log, attacker=None, adv_eval=False):
     losses = AverageMeter()
     top1 = AverageMeter()
-    top5 = AverageMeter()
+    # top5 = AverageMeter()
 
     losses_pgd = AverageMeter()
     top1_pgd = AverageMeter()
-    top5_pgd = AverageMeter()
+    # top5_pgd = AverageMeter()
 
     losses_fgsm = AverageMeter()
     top1_fgsm = AverageMeter()
-    top5_fgsm = AverageMeter()
+    # top5_fgsm = AverageMeter()
 
     # switch to evaluate mode
     model.eval()
 
     for i, (input, target) in enumerate(val_loader):
         if args.use_cuda:
-            target = target.cuda(async=True)
+            target = target.cuda()#async=True)
             input = input.cuda()
 
         # compute output
@@ -564,10 +639,10 @@ def validate(val_loader, model, criterion, log, attacker=None, adv_eval=False):
         loss = criterion(output, target)
 
         # measure accuracy and record loss
-        prec1, prec5 = accuracy(output.data, target, topk=(1, 5))
+        prec1 = accuracy(output.data, target, topk=1)
         losses.update(loss.item(), input.size(0))
         top1.update(prec1.item(), input.size(0))
-        top5.update(prec5.item(), input.size(0))
+        # top5.update(prec5.item(), input.size(0))
 
         # evaluation for adversarial attack
         if adv_eval and (attacker is not None):
@@ -581,11 +656,10 @@ def validate(val_loader, model, criterion, log, attacker=None, adv_eval=False):
             loss_fgsm = criterion(output_fgsm, target)
 
             # measure accuracy and record loss
-            prec1_fgsm, prec5_fgsm = accuracy(
-                output_fgsm.data, target, topk=(1, 5))
+            prec1_fgsm = accuracy(output_fgsm.data, target, topk=1)
             losses_fgsm.update(loss_fgsm.item(), input.size(0))
             top1_fgsm.update(prec1_fgsm.item(), input.size(0))
-            top5_fgsm.update(prec5_fgsm.item(), input.size(0))
+            # top5_fgsm.update(prec5_fgsm.item(), input.size(0))
 
             input.requires_grad = False
 
@@ -595,23 +669,19 @@ def validate(val_loader, model, criterion, log, attacker=None, adv_eval=False):
             loss_pgd = criterion(output_pgd, target)
 
             # measure accuracy and record loss
-            prec1_pgd, prec5_pgd = accuracy(
-                output_pgd.data, target, topk=(1, 5))
+            prec1_pgd = accuracy(output_pgd.data, target, topk=1)
             losses_pgd.update(loss_pgd.item(), input.size(0))
             top1_pgd.update(prec1_pgd.item(), input.size(0))
-            top5_pgd.update(prec5_pgd.item(), input.size(0))
+            # top5_pgd.update(prec5_pgd.item(), input.size(0))
 
     print_log(
-        '  **Test** Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1, top5=top5,
-                                                                                             error1=100 - top1.avg), log)
+        '  **Test** Prec@1 {top1.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1,  error1=100 - top1.avg), log)
 
     if adv_eval and (attacker is not None):
         print_log(
-            '  **PGD Test** Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1_pgd, top5=top5_pgd,
-                                                                                                     error1=100 - top1_pgd.avg), log)
+            '  **PGD Test** Prec@1 {top1.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1_pgd,  error1=100 - top1_pgd.avg), log)
         print_log(
-            '  **FGSM Test** Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1_fgsm, top5=top5_fgsm,
-                                                                                                      error1=100 - top1_fgsm.avg), log)
+            '  **FGSM Test** Prec@1 {top1.avg:.3f} Error@1 {error1:.3f}'.format(top1=top1_fgsm,  error1=100 - top1_fgsm.avg), log)
 
     return top1.avg, losses.avg, top1_pgd.avg, losses_pgd.avg, top1_fgsm.avg, losses_fgsm.avg
 
@@ -649,20 +719,24 @@ def adjust_learning_rate(optimizer, epoch, gammas, schedule):
     return lr, mu
 
 
-def accuracy(output, target, topk=(1,)):
+def accuracy(output, target, topk=(1)):
     """Computes the precision@k for the specified values of k"""
     with torch.no_grad():
-        maxk = max(topk)
+        maxk = topk
         batch_size = target.size(0)
 
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
         correct = pred.eq(target.view(1, -1).expand_as(pred))
 
-        res = []
-        for k in topk:
-            correct_k = correct[:k].view(-1).float().sum(0)
-            res.append(correct_k.mul_(100.0 / batch_size))
+        # res = []
+        # for k in topk:
+        #     correct_k = correct[:k].view(-1).float().sum(0)
+        #     res.append(correct_k.mul_(100.0 / batch_size))
+
+        k= 1
+        correct_k = correct[:k].view(-1).float().sum(0)
+        res = correct_k.mul_(100.0 / batch_size)
 
         return res
 

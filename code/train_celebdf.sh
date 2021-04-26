@@ -6,8 +6,8 @@ echo "Current host is: $HOST"
 
 case $HOST in
 "alpha")
-    PYTHON="/home/elliot/anaconda3/envs/pytorch041/bin/python" # python environment
-    TENSORBOARD='/home/elliot/anaconda3/envs/pytorch041/bin/tensorboard'
+    PYTHON="/media/disk/Backup/02congzhang/anaconda3/envs/bm2/bin/python" # python environment
+    TENSORBOARD='/media/disk/Backup/02congzhang/anaconda3/envs/bm2/bin/tensorboard'
     ;;
 esac
 
@@ -20,29 +20,29 @@ fi
 ############### Configurations ########################
 enable_tb_display=false # enable tensorboard display
 model=noise_resnet20
-dataset=cifar10
-epochs=160
-batch_size=128
+dataset=celebdf
+epochs=10
+batch_size=24
 optimizer=SGD
 # add more labels as additional info into the saving path
-label_info=train_channelwise_3e-4decay
+label_info=train_channelwise_3e-5decay
 
 #dataset path
-data_path='/home/elliot/data/pytorch/cifar10'
+data_path='/media/disk/Backup/02congzhang/dataset/CelebDF/imgsplit11'
 #tensorboard log path
 tb_path=./save/${DATE}/${dataset}_${model}_${epochs}_${optimizer}_${label_info}/tb_log  
 
 ############### main function ############################
 {
-$PYTHON main.py --dataset ${dataset} \
+/media/disk/Backup/02congzhang/anaconda3/envs/bm2/bin/python main.py --dataset ${dataset} \
     --data_path ${data_path}   \
     --arch ${model} --save_path ./save/${DATE}/${dataset}_${model}_${epochs}_${optimizer}_${label_info} \
     --epochs ${epochs} --learning_rate 0.1 \
     --optimizer ${optimizer} \
-	--schedule 80 120  --gammas 0.1 0.1 \
-    --batch_size ${batch_size} --workers 4 --ngpu 1 --gpu_id 0 \
-    --print_freq 100 --decay 0.0003 --momentum 0.9 \
-    --adv_eval --epoch_delay 5 \
+	  --schedule 80 120  --gammas 0.1 0.1 \
+    --batch_size ${batch_size} --workers 4 --ngpu 1 --gpu_id 1 \
+    --print_freq 100 --decay 0.00003 --momentum 0.9 \
+    --adv_eval --epoch_delay 6 \
     --adv_train
 } &
 ############## Tensorboard logging ##########################
